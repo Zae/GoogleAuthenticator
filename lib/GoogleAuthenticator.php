@@ -1,4 +1,4 @@
-<?php
+<?php namespace Google\Authenticator;
 
 /**
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,110 +14,224 @@
  * limitations under the License.
  */
 
-namespace Google\Authenticator;
-
-class GoogleAuthenticator
+/**
+ * Class GoogleAuthenticator
+ *
+ * @package Google\Authenticator
+ */
+class GoogleAuthenticator implements OneTimePasswordInterface
 {
-    protected $passCodeLength;
-    protected $secretLength;
-    protected $pinModulo;
-    protected $fixBitNotation;
+	protected $passCodeLength;
+	protected $secretLength;
+	protected $pinModulo;
+	protected $fixBitNotation;
 
-    /**
-     * @param int $passCodeLength
-     * @param int $secretLength
-     */
-    public function __construct($passCodeLength = 6, $secretLength = 10)
-    {
-        $this->passCodeLength = $passCodeLength;
-        $this->secretLength   = $secretLength;
-        $this->pinModulo      = pow(10, $this->passCodeLength);
-    }
+	const PINVALUE_PAD_LENGTH = 6;
+	const PINVALUE_PAD_STRING = "0";
+	const PINMODULO_BASE = 10;
+	const TIMECODE_PAD_LENGTH = 8;
+	const TIMECODE_PAD_STRING = "\000";
+	const HASH_FUNCTION = 'sha1';
+	const PASSWORD_INTERVAL = 30;
 
-    /**
-     * @param $secret
-     * @param $code
-     * @return bool
-     */
-    public function checkCode($secret, $code)
-    {
-        $time = floor(time() / 30);
-        for ($i = -1; $i <= 1; $i++) {
-            if ($this->getCode($secret, $time + $i) == $code) {
-                return true;
-            }
-        }
+	/**
+	 * @var FixedBitNotation
+	 */
+	private $bitNotation;
 
-        return false;
-    }
+	/**
+	 * @param FixedBitNotation $bitNotation
+	 * @param int              $passCodeLength
+	 * @param int              $secretLength
+	 */
+	public function __construct(FixedBitNotation $bitNotation, $passCodeLength = 6, $secretLength = 10)
+	{
+		$this->setPassCodeLength($passCodeLength);
+		$this->setSecretLength($secretLength);
 
-    /**
-     * @param $secret
-     * @param  null   $time
-     * @return string
-     */
-    public function getCode($secret, $time = null)
-    {
-        if (!$time) {
-            $time = floor(time() / 30);
-        }
+		$this->bitNotation = $bitNotation;
+	}
 
-        $base32 = new FixedBitNotation(5, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', TRUE, TRUE);
-        $secret = $base32->decode($secret);
+	public function setPassCodeLength($passCodeLength)
+	{
+		$this->passCodeLength = $passCodeLength;
+		$this->setPinModulo($this->calculatePinModulo($passCodeLength));
+	}
 
-        $time = pack("N", $time);
-        $time = str_pad($time, 8, chr(0), STR_PAD_LEFT);
+	public function getPassCodeLength()
+	{
+		return $this->passCodeLength;
+	}
 
-        $hash = hash_hmac('sha1', $time, $secret, true);
-        $offset = ord(substr($hash, -1));
-        $offset = $offset & 0xF;
+	public function setSecretLength($secretLength)
+	{
+		$this->secretLength = $secretLength;
+	}
 
-        $truncatedHash = self::hashToInt($hash, $offset) & 0x7FFFFFFF;
-        $pinValue = str_pad($truncatedHash % $this->pinModulo, 6, "0", STR_PAD_LEFT);
+	public function getSecretLength()
+	{
+		return $this->secretLength;
+	}
 
-        return $pinValue;
-    }
+	private function setPinModulo($modulo)
+	{
+		$this->pinModulo = $modulo;
+	}
 
-    /**
-     * @param $bytes
-     * @param $start
-     * @return integer
-     */
-    protected static function hashToInt($bytes, $start)
-    {
-        $input = substr($bytes, $start, strlen($bytes) - $start);
-        $val2 = unpack("N", substr($input, 0, 4));
+	/**
+	 * @param $secret
+	 * @param $code
+	 * @return bool
+	 */
+	public function checkCode($secret, $code)
+	{
+		$time = $this->getCurrentAuthenticationTime();
 
-        return $val2[1];
-    }
+		for ($i = -1; $i <= 1; $i++) {
+			if ($this->getCode($secret, $time + $i) == $code) {
+				return true;
+			}
+		}
 
-    /**
-     * @param  string $user
-     * @param  string $hostname
-     * @param  string $secret
-     * @return string
-     */
-    public function getUrl($user, $hostname, $secret)
-    {
-        $encoder = "https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl=";
-        $encoderURL = sprintf("%sotpauth://totp/%s@%s%%3Fsecret%%3D%s", $encoder, $user, $hostname, $secret);
+		return false;
+	}
 
-        return $encoderURL;
-    }
+	/**
+	 * @param $secret
+	 * @param  null   $time
+	 * @return string
+	 */
+	public function getCode($secret, $time = null)
+	{
+		if (!$time) {
+			$time = $this->getCurrentAuthenticationTime();
+		}
 
-    /**
-     * @return string
-     */
-    public function generateSecret()
-    {
-        $secret = "";
-        for ($i = 1; $i <= $this->secretLength; $i++) {
-            $c = rand(0, 255);
-            $secret .= pack("c", $c);
-        }
+		$secret = $this->bitNotation->decode($secret);
 
-        $base32 = new FixedBitNotation(5, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', TRUE, TRUE);
+		$time = $this->normalizeTimecode($time);
+		$hash = $this->GenerateHash($secret, $time);
+		$offset = $this->GenerateOffset($hash);
 
-        return $base32->encode($secret);
-    }
+		$truncatedHash = $this->TruncateHash($hash, $offset);
+		$pinValue = $this->GeneratePinValue($truncatedHash);
+
+		return $pinValue;
+	}
+
+	/**
+	 * @param  string $user
+	 * @param  string $hostname
+	 * @param  string $secret
+	 * @return string
+	 */
+	public function getUrl($user, $hostname, $secret)
+	{
+		$encoder = "https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl=";
+		$encoderURL = sprintf("%sotpauth://totp/%s@%s%%3Fsecret%%3D%s", $encoder, $user, $hostname, $secret);
+
+		return $encoderURL;
+	}
+
+	/**
+	 * @return string
+	 */
+	public function generateSecret()
+	{
+		$secret = "";
+		for ($i = 1; $i <= $this->secretLength; $i++) {
+			$c = rand(0, 255);
+			$secret .= pack("c", $c);
+		}
+
+		return $this->bitNotation->encode($secret);
+	}
+
+	/**
+	 * @param $bytes
+	 * @param $start
+	 *
+	 * @return integer
+	 */
+	private function hashToInt($bytes, $start)
+	{
+		$input = substr($bytes, $start, strlen($bytes) - $start);
+		$val2 = unpack("N", substr($input, 0, 4));
+
+		return $val2[1];
+	}
+
+	/**
+	 * @return float
+	 */
+	private function getCurrentAuthenticationTime()
+	{
+		return floor(time() / self::PASSWORD_INTERVAL);
+	}
+
+	/**
+	 * @param $time
+	 *
+	 * @return string
+	 */
+	private function normalizeTimecode($time)
+	{
+		$time = pack("N", $time);
+		$time = str_pad($time, self::TIMECODE_PAD_LENGTH, self::TIMECODE_PAD_STRING, STR_PAD_LEFT);
+
+		return $time;
+	}
+
+	/**
+	 * @param $secret
+	 * @param $time
+	 *
+	 * @return string
+	 */
+	private function GenerateHash($secret, $time)
+	{
+		return hash_hmac(self::HASH_FUNCTION, $time, $secret, true);
+	}
+
+	/**
+	 * @param $hash
+	 *
+	 * @return int
+	 */
+	private function GenerateOffset($hash)
+	{
+		$offset = ord(substr($hash, -1));
+		return $offset & 0xF;
+	}
+
+	/**
+	 * @param $hash
+	 * @param $offset
+	 *
+	 * @return int
+	 */
+	private function TruncateHash($hash, $offset)
+	{
+		return $this->hashToInt($hash, $offset) & 0x7FFFFFFF;
+	}
+
+	/**
+	 * @param $truncatedHash
+	 *
+	 * @return string
+	 */
+	private function GeneratePinValue($truncatedHash)
+	{
+		return str_pad($truncatedHash % $this->pinModulo, self::PINVALUE_PAD_LENGTH, self::PINVALUE_PAD_STRING, STR_PAD_LEFT);
+	}
+
+	/**
+	 * @param $passCodeLength
+	 *
+	 * @return number
+	 */
+	private function calculatePinModulo($passCodeLength)
+	{
+		return pow(self::PINMODULO_BASE, $passCodeLength);
+	}
 }

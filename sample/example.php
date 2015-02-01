@@ -7,7 +7,8 @@ $secret = 'XVQ2UIGO75XRUKJO';
 $time = floor(time() / 30);
 $code = "846474";
 
-$g = new \Google\Authenticator\GoogleAuthenticator();
+$g = new \Google\Authenticator\GoogleAuthenticator(new \Google\Authenticator\FixedBitNotation(5, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', true, true));
+
 
 print "Current Code is: ";
 print $g->getCode($secret);

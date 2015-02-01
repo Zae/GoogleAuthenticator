@@ -2,6 +2,7 @@
 
 namespace Google\Authenticator\Tests;
 
+use Google\Authenticator\FixedBitNotation;
 use Google\Authenticator\GoogleAuthenticator;
 
 class HandlerTest extends \PHPUnit_Framework_TestCase
@@ -13,7 +14,7 @@ class HandlerTest extends \PHPUnit_Framework_TestCase
 
     public function setUp()
     {
-        $this->helper = new GoogleAuthenticator();
+        $this->helper = new GoogleAuthenticator(new FixedBitNotation(5, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', true, true));
     }
 
     public function testGenerateSecret()
